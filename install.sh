@@ -2,30 +2,42 @@
 set -euo pipefail
 
 COPY_ONLY=0
+ROOT=""
 
 usage() {
   cat <<'USAGE'
 Uso: install.sh [opciones]
 
-  -c, --copy-only   solo copia la configuracion (sin nixos-rebuild)
-  -h, --help        muestra esta ayuda
+  -c, --copy-only     solo copia la configuracion (sin nixos-rebuild)
+  -r, --root DIR      preparar un sistema ya montado (ej: -r /mnt tras
+                      nixos-generate-config); no ejecuta nixos-rebuild
+  -h, --help          muestra esta ayuda
 
-Si /etc/nixos/configuration.nix existe (instalacion normal), el monto se
+Si $ROOT/etc/nixos/configuration.nix existe (instalacion normal), el monto se
 importa con `imports` sin tocar fileSystems ni el usuario del instalador.
 Si no existe, se usa como configuracion completa (detecta EFI/BIOS,
 VirtualBox y stateVersion).
 
-Descarga directa:
+Descarga directa (sobre el sistema instalado):
   curl -fsSL https://raw.githubusercontent.com/AnesMx96/nixos-config/main/install.sh | bash
+
+Instalacion por consola (desde el live, en una TTY con root):
+  curl -fsSL -o /tmp/install.sh https://raw.githubusercontent.com/AnesMx96/nixos-config/main/install.sh
+  bash /tmp/install.sh -r /mnt
+  nixos-install
 USAGE
 }
 
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     -c|--copy-only) COPY_ONLY=1 ;;
+    -r|--root)
+      if [[ "${2:-}" == "" ]]; then echo "--root requiere un directorio" >&2; exit 1; fi
+      ROOT="$2"; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "Opcion desconocida: $arg" >&2; usage; exit 1 ;;
+    *) echo "Opcion desconocida: $1" >&2; usage; exit 1 ;;
   esac
+  shift
 done
 
 prompt() {
@@ -78,6 +90,14 @@ fi
 
 echo "Usuario: $NAME | Equipo: $HOST | stateVersion: $STATE"
 echo "Arranque: $([[ -d /sys/firmware/efi ]] && echo 'EFI (systemd-boot)' || echo 'BIOS (GRUB)') | VirtualBox: $([[ -n "$VBOX" ]] && echo si || echo no)"
+
+ETC="$ROOT/etc/nixos"
+if [[ -n "$ROOT" ]]; then
+  DOTHOME="$ROOT/home/$NAME"
+  echo "Modo --root: preparando el sistema montado en $ROOT (nixos-rebuild no se ejecuta)"
+else
+  DOTHOME="$HOME"
+fi
 
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
@@ -171,8 +191,8 @@ sed -i \
   -e "s|__VBOX__|$VBOX|" \
   "$TMP"
 
-if [[ ! -d /etc/nixos ]]; then
-  echo "No existe /etc/nixos: ejecuta este script dentro de NixOS." >&2
+if [[ ! -d "$ETC" ]]; then
+  echo "No existe $ETC: ejecuta nixos-generate-config --root <dir> primero." >&2
   exit 1
 fi
 
@@ -181,25 +201,25 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   SUDO="sudo"
 fi
 
-if [[ -f /etc/nixos/configuration.nix ]]; then
-  BAK="/etc/nixos/configuration.nix.bak.$(date +%Y%m%d-%H%M%S)"
+if [[ -f "$ETC/configuration.nix" ]]; then
+  BAK="$ETC/configuration.nix.bak.$(date +%Y%m%d-%H%M%S)"
   echo "Respaldando configuracion actual -> $BAK"
-  $SUDO cp /etc/nixos/configuration.nix "$BAK"
-  $SUDO cp "$TMP" /etc/nixos/hyprland-desktop.nix
-  if ! grep -q 'hyprland-desktop.nix' /etc/nixos/configuration.nix; then
-    $SUDO sed -i '0,/^{$/s|^{$|{\n  imports = [ ./hyprland-desktop.nix ];|' /etc/nixos/configuration.nix
+  $SUDO cp "$ETC/configuration.nix" "$BAK"
+  $SUDO cp "$TMP" "$ETC/hyprland-desktop.nix"
+  if ! grep -q 'hyprland-desktop.nix' "$ETC/configuration.nix"; then
+    $SUDO sed -i '0,/^{$/s|^{$|{\n  imports = [ ./hyprland-desktop.nix ];|' "$ETC/configuration.nix"
   fi
-  echo "Montado en /etc/nixos/hyprland-desktop.nix (imports anadido, fileSystems y usuario intactos)."
+  echo "Montado en $ETC/hyprland-desktop.nix (imports anadido, fileSystems y usuario intactos)."
 else
-  $SUDO cp "$TMP" /etc/nixos/configuration.nix
-  echo "configuration.nix instalado (modo completo, sin config previa)."
+  $SUDO cp "$TMP" "$ETC/configuration.nix"
+  echo "configuration.nix instalado en $ETC (modo completo, sin config previa)."
 fi
 
 echo "Contrasena inicial del usuario: nixos  (cambiala despues con: passwd)"
 
-mkdir -p "$HOME/.config/hypr" "$HOME/.config/waybar"
+mkdir -p "$DOTHOME/.config/hypr" "$DOTHOME/.config/waybar"
 
-if [[ ! -f "$HOME/.config/hypr/hyprland.conf" ]]; then
+if [[ ! -f "$DOTHOME/.config/hypr/hyprland.conf" ]]; then
   cat > "$HOME/.config/hypr/hyprland.conf" <<'HYPR'
 monitor = ,preferred,auto,1
 
@@ -274,7 +294,7 @@ HYPR
   echo "Hyprland: escrito ~/.config/hypr/hyprland.conf"
 fi
 
-if [[ ! -f "$HOME/.config/waybar/config" ]]; then
+if [[ ! -f "$DOTHOME/.config/waybar/config" ]]; then
   cat > "$HOME/.config/waybar/config" <<'WB'
 {
   "layer": "top",
@@ -326,6 +346,11 @@ window#waybar {
 }
 CSS
   echo "Waybar: escrito ~/.config/waybar/config + style.css"
+fi
+
+if [[ -n "$ROOT" ]]; then
+  echo "Listo. Sistema preparado en $ROOT. Siguiente paso: nixos-install"
+  exit 0
 fi
 
 if [[ "$COPY_ONLY" -eq 1 ]]; then
