@@ -7,11 +7,13 @@ usage() {
   cat <<'USAGE'
 Uso: install.sh [opciones]
 
-  -c, --copy-only   solo copia configuration.nix a /etc/nixos (sin nixos-rebuild)
+  -c, --copy-only   solo copia la configuracion (sin nixos-rebuild)
   -h, --help        muestra esta ayuda
 
-Auto-detecta: EFI/BIOS (systemd-boot o GRUB), VirtualBox (guest additions)
-y la version de NixOS instalada (stateVersion).
+Si /etc/nixos/configuration.nix existe (instalacion normal), el monto se
+importa con `imports` sin tocar fileSystems ni el usuario del instalador.
+Si no existe, se usa como configuracion completa (detecta EFI/BIOS,
+VirtualBox y stateVersion).
 
 Descarga directa:
   curl -fsSL https://raw.githubusercontent.com/AnesMx96/nixos-config/main/install.sh | bash
@@ -41,7 +43,7 @@ valid_name() {
   [[ "$1" =~ ^[a-z0-9_][a-z0-9_-]*$ ]]
 }
 
-NAME="$(prompt 'Tu nombre de usuario: ')"
+NAME="$(prompt 'Tu nombre de usuario (el que creaste en el instalador): ')"
 if ! valid_name "$NAME"; then
   echo "Nombre no valido: '$NAME' (solo minusculas, digitos, '_' o '-')." >&2
   exit 1
@@ -81,30 +83,30 @@ TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
 cat > "$TMP" <<'NIX'
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   __BOOTLOADER__
 
-  networking.hostName = "__HOST__";
+  networking.hostName = lib.mkForce "__HOST__";
   networking.networkmanager.enable = true;
   networking.firewall.enable = true;
 
-  time.timeZone = "Europe/Madrid";
-  i18n.defaultLocale = "es_ES.UTF-8";
-  console.keyMap = "es";
-  services.xserver.xkb = {
+  time.timeZone = lib.mkForce "Europe/Madrid";
+  i18n.defaultLocale = lib.mkForce "es_ES.UTF-8";
+  console.keyMap = lib.mkForce "es";
+  services.xserver.xkb = lib.mkForce {
     layout = "es";
     variant = "";
   };
 
   users.users."__USER__" = {
     isNormalUser = true;
-    description = "__USER__";
     extraGroups = [ "wheel" ];
     initialPassword = "nixos";
   };
 
+  services.displayManager.gdm.enable = false;
   services.displayManager.sddm = {
     enable = true;
     wayland.enable = true;
@@ -183,11 +185,17 @@ if [[ -f /etc/nixos/configuration.nix ]]; then
   BAK="/etc/nixos/configuration.nix.bak.$(date +%Y%m%d-%H%M%S)"
   echo "Respaldando configuracion actual -> $BAK"
   $SUDO cp /etc/nixos/configuration.nix "$BAK"
+  $SUDO cp "$TMP" /etc/nixos/hyprland-desktop.nix
+  if ! grep -q 'hyprland-desktop.nix' /etc/nixos/configuration.nix; then
+    $SUDO sed -i '0,/^{$/s|^{$|{\n  imports = [ ./hyprland-desktop.nix ];|' /etc/nixos/configuration.nix
+  fi
+  echo "Montado en /etc/nixos/hyprland-desktop.nix (imports anadido, fileSystems y usuario intactos)."
+else
+  $SUDO cp "$TMP" /etc/nixos/configuration.nix
+  echo "configuration.nix instalado (modo completo, sin config previa)."
 fi
 
-$SUDO cp "$TMP" /etc/nixos/configuration.nix
-echo "configuration.nix instalado (usuario: $NAME, equipo: $HOST, stateVersion: $STATE)."
-echo "Contrasena inicial: nixos  (cambiala despues con: passwd)"
+echo "Contrasena inicial del usuario: nixos  (cambiala despues con: passwd)"
 
 mkdir -p "$HOME/.config/hypr" "$HOME/.config/waybar"
 
